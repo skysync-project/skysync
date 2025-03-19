@@ -1,0 +1,32 @@
+syntax="proto2";
+package sync_rpc;
+
+option cc_generic_services = true;
+
+message SyncRequest {
+      required string message = 1;
+};
+
+message SyncResponse {
+      required string message = 1;
+};
+
+message DataCommandRequest {
+      required uint32 cmd = 1;
+      required uint64 length = 2;
+      required uint64 offset = 3;
+      optional bytes data = 4;
+      required bool isLast = 5;
+};
+
+message DataCommandResponse {
+      required string message = 1;
+};
+
+service EchoService {
+      rpc Echo(SyncRequest) returns (SyncResponse);
+};
+
+service DataCommandService {
+      rpc Echo(DataCommandRequest) returns (DataCommandResponse);
+};

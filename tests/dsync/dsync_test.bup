@@ -1,0 +1,139 @@
+#include "fastcdc.h"
+#include <time.h>
+
+// #define BREAK_DOWN_TIME 2
+
+int main(int argc, char** argv) {
+    if (argc < 4) {
+        printf("Usage: %s <old_file> <new_file> <chunking method>: \n"
+            "\t 1: origin fastcdc \n"
+            "\t 2: rolling 2 bytes \n"
+            "\t 3: normalized fastcdc \n"
+            "\t 4: normalized 2 bytes\n", argv[0]);
+        exit(1);
+    }
+
+    /* write_file_path = file_name + "-fastcdc" */
+    char old_fastfp_file_path[strlen(argv[1]) + 20];
+    strcpy(old_fastfp_file_path, argv[1]);
+    strcat(old_fastfp_file_path, "_fastfp_dsync");
+
+    char new_fastfp_file_path[strlen(argv[2]) + 20];
+    strcpy(new_fastfp_file_path, argv[2]);
+    strcat(new_fastfp_file_path, "_fastfp_dsync");
+
+    clock_t server_total_time, client_total_time;
+    clock_t server_checksum_calulate_time, client_checksum_calulate_time;
+    clock_t start, end;
+
+    struct stats stats = {
+        .read_io_bytes = 0,
+        .write_io_bytes = 0,
+    };
+
+    /* server */
+    start = clock();
+    run_fastfp(argv[1], old_fastfp_file_path, atoi(argv[3]), &stats);
+    end = clock();
+    server_checksum_calulate_time = end - start;
+    server_total_time = end - start;
+
+    /* client */
+    start = clock();
+    run_fastfp(argv[2], new_fastfp_file_path, atoi(argv[3]), &stats);
+    end = clock();
+    client_checksum_calulate_time = end - start;
+    client_total_time = end - start;
+    /* post fastfp file to server */
+
+    /* server */
+    start = clock();
+    struct file_fastcdc *old_ff = read_fastfp(old_fastfp_file_path, &stats);
+    struct file_fastcdc *new_ff = read_fastfp(new_fastfp_file_path, &stats);
+    // printf("old file:");
+    // printf("file %s chunk nums: %lu\n", argv[1], old_ff->chunk_num);
+    // for(int i = 0; i < old_ff->chunk_num; i++) {
+    //     printf("offset: %lu, fastfp: %lu\n", old_ff->fastcdc_array[i].offset, old_ff->fastcdc_array[i].fastfp);
+    // }
+    // printf("new file:");
+    // printf("file %s chunk nums: %lu\n", argv[2], new_ff->chunk_num);
+    // for(int i = 0; i < new_ff->chunk_num; i++) {
+    //     printf("offset: %lu, fastfp: %lu\n", new_ff->fastcdc_array[i].offset, new_ff->fastcdc_array[i].fastfp);
+    // }
+
+    /* compare two files' fastfp */
+    clock_t server_compare = clock();
+    struct matched_chunks *mc_w = compare_fastfp(argv[1], old_ff, new_ff, &stats);
+    clock_t server_compare_end = clock() - server_compare;
+    printf("server: compare fastfp time: %f\n", (double)(server_compare_end) / CLOCKS_PER_SEC);
+
+    char old_file_sha1[strlen(argv[1]) + 20];
+    strcpy(old_file_sha1, argv[1]);
+    strcat(old_file_sha1, "_sha1_dsync");
+
+    /* dump matched chunks and sha1 to file */
+    write_matched(mc_w, old_file_sha1, &stats);
+    end = clock();
+    server_checksum_calulate_time += end - start;
+    server_total_time += end - start;
+    /* post matched file to client */
+
+    free(old_ff->fastcdc_array);free(old_ff);
+    free(new_ff->fastcdc_array);free(new_ff);
+
+    /* client */
+    start = clock();
+    struct matched_chunks *mc_r = read_matched(old_file_sha1, &stats);
+    /* compare two matched chunks' sha1 */
+    clock_t client_compare = clock();
+    struct matched_chunks *mc_c = compare_sha1(mc_r, argv[2], &stats);
+    end = clock();
+    client_checksum_calulate_time += end - start;
+    client_total_time += end - start;
+    
+    printf("client: compare sha1 time: %f\n", (double)(end - client_compare) / CLOCKS_PER_SEC);
+
+    /* generate delta file */
+    char delta_file_path[strlen(argv[2]) + 20];
+    strcpy(delta_file_path, argv[2]);
+    strcat(delta_file_path, "_delta_dsync");
+    start = clock();
+    generate_delta(mc_c, argv[2], delta_file_path, &stats);
+    end = clock();
+    #ifdef BREAK_DOWN_TIME
+        printf("client: generate delta time: %f\n", (double)(end - start) / CLOCKS_PER_SEC);
+    #endif
+    client_total_time += end - start;
+    /* post delta file to server */
+
+    /* server */
+    char output_file[strlen(argv[1]) + 20];
+    strcpy(output_file, argv[1]);
+    strcat(output_file, "_patch_dsync");
+
+    start = clock();
+    fastcdc_patch_delta(argv[1], delta_file_path, output_file, &stats);
+    end = clock();
+    #ifdef BREAK_DOWN_TIME
+        printf("server: patch delta time: %f\n", (double)(end - start) / CLOCKS_PER_SEC);
+    #endif
+    server_total_time += end - start;
+
+    // printf("client: checksum calculate time: %f\n", (double)(client_checksum_calulate_time) / CLOCKS_PER_SEC);
+    // printf("server: checksum calculate time: %f\n", (double)(server_checksum_calulate_time) / CLOCKS_PER_SEC);
+
+    printf("client: total time: %f\n", (double)(client_total_time) / CLOCKS_PER_SEC);
+    printf("server: total time: %f\n", (double)(server_total_time) / CLOCKS_PER_SEC);
+    
+    #ifdef IO_PRINT
+        printf("read io bytes: %lu\n", stats.read_io_bytes);
+        printf("write io bytes: %lu\n", stats.write_io_bytes);
+    #endif
+
+    // Remove the file
+    // remove(old_fastfp_file_path);
+    // remove(new_fastfp_file_path);
+    // remove(old_file_sha1);
+    // remove(delta_file_path);
+    // remove(output_file);
+}

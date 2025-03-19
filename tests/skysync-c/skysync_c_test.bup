@@ -1,0 +1,123 @@
+#include <time.h>
+#include "skysync_c.h"
+
+#define BREAK_DOWN_TIME
+
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        printf("Usage: %s <old_file> <new_file> \n", argv[0]);
+        exit(1);
+    }
+
+     /* write_file_path = file_name + "-cdcrc-weak" */
+    char old_file_weak_path[strlen(argv[1]) + 20];
+    strcpy(old_file_weak_path, argv[1]);
+    strcat(old_file_weak_path, "_weak_skysync_c");
+
+    char new_file_weak_path[strlen(argv[2]) + 20];
+    strcpy(new_file_weak_path, argv[2]);
+    strcat(new_file_weak_path, "_weak_skysync_c");
+
+    clock_t receiver_total_time, sender_total_time;
+    clock_t start, end;
+
+    struct stats stats = {
+        .read_io_bytes = 0,
+        .write_io_bytes = 0,
+    };
+
+    /* receiver */
+    start = clock();
+    serial_cdc(argv[1], old_file_weak_path, &stats);
+    end = clock();
+    #ifdef BREAK_DOWN_TIME
+        printf("receiver: generate cdc cdc32 time: %f\n", (double)(end - start) / CLOCKS_PER_SEC);
+    #endif
+    receiver_total_time = end - start;
+
+    /* sender */
+    start = clock();
+    serial_cdc(argv[2], new_file_weak_path, &stats);
+    end = clock();
+    #ifdef BREAK_DOWN_TIME
+        printf("sender: generate cdc cdc32 time: %f\n", (double)(end - start) / CLOCKS_PER_SEC);
+    #endif
+    sender_total_time = end - start;
+
+    /* receiver */
+    start = clock();
+    struct file_cdc *old_fc = read_cdc(old_file_weak_path, &stats);
+    struct file_cdc *new_fc = read_cdc(new_file_weak_path, &stats);
+
+    struct cdc_matched_chunks *mc = compare_weak_hash(argv[1], old_fc, new_fc, &stats);
+
+    char old_file_sha1[strlen(argv[1]) + 20];
+    strcpy(old_file_sha1, argv[1]);
+    strcat(old_file_sha1, "_sha1_skysync_c");
+
+    /* dump matched chunks to file */
+    cdc_write_matched(mc, old_file_sha1, &stats);
+    end = clock();
+    #ifdef BREAK_DOWN_TIME
+        printf("receiver: compare cdc cdc32 time: %f\n", (double)(end - start) / CLOCKS_PER_SEC);
+    #endif
+    receiver_total_time += end - start;
+
+    free(old_fc->cdc_array); free(old_fc);
+    free(new_fc->cdc_array); free(new_fc);
+
+    /* sender */
+    start = clock();
+    struct cdc_matched_chunks *mc_r = cdc_read_matched(old_file_sha1, &stats);
+
+    struct cdc_matched_chunks *mc2 = cdc_compare_sha1(mc_r, argv[2], &stats);
+    end = clock();
+    #ifdef BREAK_DOWN_TIME
+        printf("sender: generate and compare sha1 time: %f\n", (double)(end - start) / CLOCKS_PER_SEC);
+    #endif
+    sender_total_time += end - start;
+
+    /* generate delta file */
+    char delta_file_path[strlen(argv[2]) + 20];
+    strcpy(delta_file_path, argv[2]);
+    strcat(delta_file_path, "_delta_skysync_c");
+
+    start = clock();
+    cdc_generate_delta(mc2, argv[2], delta_file_path, &stats);
+    end = clock();
+    #ifdef BREAK_DOWN_TIME
+        printf("sender: generate delta time: %f\n", (double)(end - start) / CLOCKS_PER_SEC);
+    #endif
+    sender_total_time += end - start;
+
+    /* receiver */
+    char output_file[strlen(argv[1]) + 20];
+    strcpy(output_file, argv[1]);
+    strcat(output_file, "_patch_skysync_c");
+
+    start = clock();
+    fastcdc_patch_delta(argv[1], delta_file_path, output_file, &stats);
+    end = clock();
+    #ifdef BREAK_DOWN_TIME
+        printf("receiver: patch delta time: %f\n", (double)(end - start) / CLOCKS_PER_SEC);
+    #endif
+    receiver_total_time += end - start;
+
+    printf("receiver total time: %f\n", (double)receiver_total_time / CLOCKS_PER_SEC);
+    printf("sender total time: %f\n", (double)sender_total_time / CLOCKS_PER_SEC);
+
+    #ifdef IO_PRINT
+        printf("read io bytes: %lu\n", stats.read_io_bytes);
+        printf("write io bytes: %lu\n", stats.write_io_bytes);
+    #endif
+
+    // Remove the file
+    // remove(old_file_weak_path);
+    // remove(new_file_weak_path);
+    // remove(old_file_sha1);
+    // remove(delta_file_path);
+    // remove(output_file);
+
+    return 0;
+}
+

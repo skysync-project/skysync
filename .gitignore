@@ -1,0 +1,87 @@
+rdiff
+*.o
+CMakeCache.txt
+CTestTestfile.cmake
+config.h
+*.cbp
+librsync.so*
+librsync.a
+librsync*.dylib
+Makefile
+CMakeFiles
+*.lo
+.libs
+librsync.la
+librsync-[0-9]*tar.gz
+librsync-[0-9]*/
+/m4/
+tags
+*.dylib
+cmake_install.cmake
+*.la
+doc/Doxyfile
+tests/isprefix.driver
+html
+latex
+Testing
+*.user
+.cmake
+build
+
+# CMake generated Doxygen files
+CMakeDoxyfile.in
+CMakeDoxygenDefaults.cmake
+
+# Editor temp files
+.sw?
+.*.sw?
+*~
+
+# OSX build outputs
+*.dSYM
+
+# Test binaries
+*_test
+*_test.exe
+*_test.exe.manifest
+
+# Performance benchmark binaries
+*_perf
+*_perf.exe
+*_perf.exe.manifest
+
+*.bak
+
+*.tmp
+
+# for rtags
+compile_commands.json
+
+# Cache sometimes leftover by Doxygen,
+# similar to https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=758975
+doxygen_sqlite3.db
+
+# Coverage reports
+*.gcov
+
+# Optional build using http://build-ninja.org
+.ninja_deps
+.ninja_log
+build.ninja
+rules.ninja
+
+# Microsoft Visual Studio build files
+*.sln
+*.vcxproj
+*.vcxproj.filters
+
+test
+test.data
+.cpptree*
+.calltree*
+perf.data
+*.data
+*.log
+gmon.out
+*.pb.h
+*.pb.cc

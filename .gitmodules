@@ -1,0 +1,27 @@
+[submodule "thirdparty/isa-l"]
+	path = thirdparty/isa-l
+	url = https://github.com/intel/isa-l
+[submodule "thirdparty/mimalloc"]
+	path = thirdparty/mimalloc
+	url = https://gitee.com/zhihaogit/mimalloc
+[submodule "thirdparty/librsync"]
+	path = thirdparty/librsync
+	url = https://gitee.com/mirrors_librsync/librsync
+[submodule "thirdparty/brpc"]
+	path = thirdparty/brpc
+	url = https://gitee.com/zhihaogit/brpc
+[submodule "thirdparty/photon"]
+	path = thirdparty/photon
+	url = https://gitee.com/alibaba/PhotonLibOS.git
+[submodule "thirdparty/liburing"]
+	path = thirdparty/liburing
+	url = https://gitee.com/zhihaogit/liburing
+[submodule "src/b3"]
+	path = src/b3
+	url = https://gitee.com/zhihaogit/blake3
+[submodule "thirdparty/oneTBB"]
+	path = thirdparty/oneTBB
+	url = https://gitee.com/zhihaogit/oneTBB
+[submodule "thirdparty/isa-l_crypto"]
+	path = thirdparty/isa-l_crypto
+	url = https://gitee.com/zhihaogit/isa-l_crypto

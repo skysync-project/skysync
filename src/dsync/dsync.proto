@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package dsync;
+
+// Basic offset-length pair used throughout dsync operations
+message OffsetLength {
+  uint64 offset = 1;  // File offset in bytes
+  uint64 length = 2;  // Length in bytes
+}
+
+// Array of uint32 CRC32 weak hashes for chunk identification
+message Uint32Queue {
+  repeated uint32 weak_hashes = 1;  // CRC32 weak hash values
+}
+
+// SHA hash to chunk mapping entry for strong hash verification
+message ShaToChunkEntry {
+  bytes sha_hash = 1;      // SHA hash as binary data (20 bytes for SHA1, 32 bytes for SHA256/BLAKE3)
+  OffsetLength chunk = 2;  // Corresponding chunk offset and length
+}
+
+// Matched item with weak hash and SHA mappings for RPC version 1
+message MatchedItemRpc1 {
+  uint64 item_nums = 1;                              // Number of items in this match
+  uint32 weak_hash = 2;                              // CRC32 weak hash value
+  repeated ShaToChunkEntry sha_to_chunk_map = 3;     // Map of SHA hashes to chunk locations
+  bool end_of_stream = 4;                            // Indicates if this is the last item in stream
+}
+
+// Queue of matched items for batch processing
+message MatchedItemRpc1Queue {
+  repeated MatchedItemRpc1 items = 1;  // Array of matched items
+}
+
+// Data command for delta operations (copy or literal data)
+message DataCmd {
+  enum CommandType {
+    COPY = 0;      // Copy data from basis file
+    LITERAL = 1;   // Insert literal data
+  }
+  CommandType cmd = 1;        // Command type (copy or literal)
+  uint64 offset = 2;          // Offset in basis file (for copy) or target file (for literal)
+  uint64 length = 3;          // Length of data to copy or insert
+  bytes data = 4;             // Literal data payload (empty for copy commands)
+  bool end_of_stream = 5;     // Indicates if this is the last command in stream
+}
+
+// Queue of data commands for delta reconstruction
+message DataCmdQueue {
+  repeated DataCmd commands = 1;  // Array of data commands
+}
+
+// Combined response for /csums_queue endpoint containing all necessary data
+message CsumsQueueResponse {
+  MatchedItemRpc1Queue weak_matched_data = 1;  // Weak hash matched chunks
+  string request_key = 2;                      // Unique request identifier for tracking
+  bool success = 3;                            // Operation success status
+  string error_message = 4;                    // Error description if success is false
+}
+
+// Error response for failed operations
+message ErrorResponse {
+  int32 error_code = 1;        // HTTP status code or custom error code
+  string error_message = 2;    // Human-readable error description
+  string request_id = 3;       // Optional request identifier for debugging
+  int64 timestamp = 4;         // Unix timestamp when error occurred
+}

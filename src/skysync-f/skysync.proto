@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package skysync_f;
+
+message OneFSC {
+  uint64 offset = 1;
+  uint64 length = 2;
+  uint32 weak_hash = 3;
+  bytes strong_hash = 4;
+}
+
+message FileFSC {
+  repeated OneFSC fsc_array = 1;
+}
+
+message DataCommand {
+  enum CommandType {
+    COPY = 0;
+    LITERAL = 1;
+  }
+  CommandType cmd = 1;
+  uint64 offset = 2;
+  uint64 length = 3;
+  bytes data = 4;
+  bool end_of_stream = 5;
+}
+
+message Delta {
+  repeated DataCommand commands = 1;
+}

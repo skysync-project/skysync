@@ -5,10 +5,16 @@
 #include "crc32c.h"
 #include "crc32/crc32.h"
 
+// #define SEARCHING_TIME
+
 off_t file_size(int fd);
 int compare_offset(const void *a, const void *b);
 void *map_file(int fd);
 void unmap_file(int fd, void *map);
+
+#ifdef SEARCHING_TIME
+    std::chrono::duration<double> searching_time;
+#endif
 
 file_fsc* calc_fsc_hw(int fd) {
     uint64_t fs = file_size(fd);
@@ -329,7 +335,15 @@ void ClientSkySyncFWorker::rolling_fsc_sw(int fd, file_fsc *old_csums, file_fsc 
     // Rolling hash loop - handle all possible windows including the last one
     while (file_offset + DefaultWindowSize <= fs) {
         // if (this->weak_hash_table->contains(rolling_crc)) {
-        if (this->weak_hash7_table->contains(rolling_crc)) {
+        #ifdef SEARCHING_TIME
+            auto start = std::chrono::high_resolution_clock::now();
+        #endif
+        bool found_match = this->weak_hash7_table->contains(rolling_crc);
+        #ifdef SEARCHING_TIME
+            auto end = std::chrono::high_resolution_clock::now();
+            searching_time += (end - start);
+        #endif
+        if (found_match) {
             // Calculate strong hash for verification
             uint8_t strong_hash_bytes[SHA256_OUT_LEN];
             cal_sha256(strong_hash_bytes, (uint8_t*)(map + file_offset), DefaultWindowSize);
@@ -415,6 +429,10 @@ void ClientSkySyncFWorker::rolling_fsc_sw(int fd, file_fsc *old_csums, file_fsc 
     
     unmap_file(fd, map);
     data_cmd_queue.setDone();
+
+    #ifdef SEARCHING_TIME
+        printf("    Client Searching time: %f seconds\n", searching_time.count());
+    #endif
 }
 
 void ClientSkySyncFWorker::rolling_fsc_hw(int fd, file_fsc *old_csums, file_fsc *new_csums, DataQueue<data_cmd> &data_cmd_queue) {

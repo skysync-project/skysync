@@ -66,6 +66,36 @@ First, you can run the core logic of each algorithm on a single machine using th
 ./skysync_c_test <old-file: 100MB> <new-file: 100MB-insert-8MB> <0 for software, 1 for hardware acceleration>
 ```
 
+The following presents example test results for `dsync` and `skysync_c`, where "CDC" and "Calculate Strong Hash" represent calculating, "Compare Weak Hash" corresponds to the searching phase, and "Generate Delta" and "Patch Delta" represent the delta blocks generation and patching phases (others).
+
+```bash
+Server Serial CDC time,0.5
+Client Serial CDC time,0.5
+Server Compare Weak Hash time,0.3
+Client Calculate Strong Hash time,0.2
+Client Generate Delta time,0.04
+Server Patch Delta time,0.06
+```
+
+The following presents example test results for `rsync` and `skysync_f`.
+
+```bash
+Server Signature generation completed in 0.3 seconds
+Client Rolling and Delta generation completed in 0.9 seconds
+Server Patch delta applied in 0.1 seconds
+```
+
+"Signature generation" corresponds to calculation overhead. "Rolling and Delta" phase on the client side is a mix of calculation and searching. Using `perf` to distinguish between searching and calculation overhead:
+
+```bash
+perf record -F5000 -g ./rsync_test
+perf report -F overhead,symbol
+```
+
+For `rsync`, `rs_signature_find_match` represents the searching phase, while others including `rs_delta_s_scan`, `rs_mdfour`, `blake2b_compress`, `RollsumUpdate`, `memmove/memcopy` and `page_cache` management represent the calculation phase.
+
+For `skysync_f`, we provide fine-grained timing measurements by enabling the `SEARCHING_TIME` macro (defined in `src/skysync-f/skysync_f_worker.cpp`). This separates the searching phase from the calculation phase. However, when conducting comparative benchmarks against other systems, this macro must be disabled to avoid introducing measurement overhead that could skew performance results.
+
 You can continue to run the HTTP server on one machine and the client on another. On the machine acting as the server (which holds the new file version), start the appropriate HTTP server.
 
 ```bash

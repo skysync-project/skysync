@@ -19,6 +19,7 @@
 #include "dsync.pb.h"
 #include "dsync.h"
 #include "dsync_http.h"
+#include <google/protobuf/io/zero_copy_stream_impl.h>
 
 using namespace photon;
 

@@ -19,6 +19,7 @@
 #include "dsync.pb.h"
 #include "dsync.h"
 #include "dsync_http.h"
+#include "fastcdc.h"
 #include <google/protobuf/io/zero_copy_stream_impl.h>
 
 using namespace photon;
@@ -337,15 +338,194 @@ public:
         } else if (path_str == "/patch" && req.verb() == net::http::Verb::POST) {
             LOG_INFO("Handling /patch request for file: `", basis_filename.c_str());
 
-            std::string request_body(req.headers.content_length(), '\0');
-            ssize_t bytes_read = req.read(request_body.data(), request_body.size());
-            if (bytes_read != (ssize_t)request_body.size()) {
-                LOG_ERROR("Failed to read request body for /patch. Expected: `, Read: `", request_body.size(), bytes_read);
+            // Create temporary file to stream incoming delta data
+            char tmp_file[] = "/tmp/dsync-server-delta-XXXXXX";
+            int tmp_fd = mkstemp(tmp_file);
+            if (tmp_fd < 0) {
+                LOG_ERROR("Failed to create temporary file for streaming delta data, error: `(`)", errno, strerror(errno));
+                
+                // Create protobuf error response
+                dsync::ErrorResponse error_resp;
+                error_resp.set_error_code(500);
+                error_resp.set_error_message("Failed to create temporary file");
+                error_resp.set_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+                
+                std::string error_data;
+                error_resp.SerializeToString(&error_data);
+                
+                resp.set_result(500);
+                resp.headers.content_length(error_data.size());
+                resp.headers.insert("Content-Type", "application/x-protobuf");
+                resp.write(error_data.c_str(), error_data.size());
+                return 0;
+            }
+            DEFER(close(tmp_fd); unlink(tmp_file));
+
+            // Stream incoming HTTP request data directly to temporary file
+            size_t content_length = req.headers.content_length();
+            size_t total_written = 0;
+            const size_t buffer_size = 64 * 1024 * 1024;
+            char *buffer = (char *)mi_malloc(buffer_size);
+            DEFER(mi_free(buffer));
+
+            auto delta_rtt_start = std::chrono::high_resolution_clock::now();
+            
+            while (total_written < content_length) {
+                size_t to_read = std::min(buffer_size, content_length - total_written);
+                ssize_t bytes_read = req.read(buffer, to_read);
+                if (bytes_read <= 0) {
+                    LOG_ERROR("Failed to read request data for /patch. Expected: `, Read: `", to_read, bytes_read);
+                    
+                    // Create protobuf error response
+                    dsync::ErrorResponse error_resp;
+                    error_resp.set_error_code(400);
+                    error_resp.set_error_message("Failed to read request body");
+                    error_resp.set_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count());
+                    
+                    std::string error_data;
+                    error_resp.SerializeToString(&error_data);
+                    
+                    resp.set_result(400);
+                    resp.headers.content_length(error_data.size());
+                    resp.headers.insert("Content-Type", "application/x-protobuf");
+                    resp.write(error_data.c_str(), error_data.size());
+                    return 0;
+                }
+                
+                ssize_t bytes_written = write(tmp_fd, buffer, bytes_read);
+                if (bytes_written != bytes_read) {
+                    LOG_ERROR("Failed to write to temporary file. Expected: `, Written: `", bytes_read, bytes_written);
+                    
+                    // Create protobuf error response
+                    dsync::ErrorResponse error_resp;
+                    error_resp.set_error_code(500);
+                    error_resp.set_error_message("Failed to write to temporary file");
+                    error_resp.set_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count());
+                    
+                    std::string error_data;
+                    error_resp.SerializeToString(&error_data);
+                    
+                    resp.set_result(500);
+                    resp.headers.content_length(error_data.size());
+                    resp.headers.insert("Content-Type", "application/x-protobuf");
+                    resp.write(error_data.c_str(), error_data.size());
+                    return 0;
+                }
+                
+                total_written += bytes_read;
+            }
+
+            // Reset file position to beginning for reading
+            if (lseek(tmp_fd, 0, SEEK_SET) < 0) {
+                LOG_ERROR("Failed to seek to beginning of temporary file, error: `(`)", errno, strerror(errno));
+                
+                // Create protobuf error response
+                dsync::ErrorResponse error_resp;
+                error_resp.set_error_code(500);
+                error_resp.set_error_message("Failed to seek temporary file");
+                error_resp.set_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+                
+                std::string error_data;
+                error_resp.SerializeToString(&error_data);
+                
+                resp.set_result(500);
+                resp.headers.content_length(error_data.size());
+                resp.headers.insert("Content-Type", "application/x-protobuf");
+                resp.write(error_data.c_str(), error_data.size());
+                return 0;
+            }
+
+            auto delta_rtt_end = std::chrono::high_resolution_clock::now();
+            auto diff = std::chrono::duration<double>(delta_rtt_end - delta_rtt_start).count();
+
+            std::string ack_response = "ACK-" + std::to_string(diff);
+            resp.set_result(200);
+            resp.headers.content_length(ack_response.size());
+            resp.write(ack_response.c_str(), ack_response.size());
+
+            ServerSyncWorker server_worker;
+            
+            // Parse binary data from temporary file and populate data_cmd_queue
+            try {
+                size_t bytes_processed = 0;
+                while (bytes_processed < content_length) {
+                    data_cmd cmd;
+                    
+                    // Read command type (1 byte)
+                    ssize_t read_result = read(tmp_fd, &cmd.cmd, sizeof(cmd.cmd));
+                    if (read_result != sizeof(cmd.cmd)) {
+                        LOG_ERROR("Failed to read command type from temporary file");
+                        break;
+                    }
+                    bytes_processed += sizeof(cmd.cmd);
+                    
+                    // Read offset (8 bytes)
+                    read_result = read(tmp_fd, &cmd.offset, sizeof(cmd.offset));
+                    if (read_result != sizeof(cmd.offset)) {
+                        LOG_ERROR("Failed to read offset from temporary file");
+                        break;
+                    }
+                    bytes_processed += sizeof(cmd.offset);
+                    
+                    // Read length (8 bytes)
+                    read_result = read(tmp_fd, &cmd.length, sizeof(cmd.length));
+                    if (read_result != sizeof(cmd.length)) {
+                        LOG_ERROR("Failed to read length from temporary file");
+                        break;
+                    }
+                    bytes_processed += sizeof(cmd.length);
+                    
+                    // Initialize data pointer
+                    cmd.data = nullptr;
+                    cmd.end_of_stream = false;
+                    
+                    // For CMD_LITERAL, read the data bytes
+                    if (cmd.cmd == CMD_LITERAL) {
+                        if (cmd.length > 0) {
+                            cmd.data = (uint8_t *)mi_malloc(cmd.length);
+                            
+                            size_t data_read = 0;
+                            while (data_read < cmd.length) {
+                                ssize_t read_size = read(tmp_fd, cmd.data + data_read, cmd.length - data_read);
+            
+                                data_read += read_size;
+                            }
+                            bytes_processed += cmd.length;
+                        }
+                    } else if (cmd.cmd != CMD_COPY) {
+                        LOG_ERROR("Invalid command type: `", (int)cmd.cmd);
+                        
+                        // Create protobuf error response
+                        dsync::ErrorResponse error_resp;
+                        error_resp.set_error_code(400);
+                        error_resp.set_error_message("Invalid command type in binary data");
+                        error_resp.set_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch()).count());
+                        
+                        std::string error_data;
+                        error_resp.SerializeToString(&error_data);
+                        
+                        resp.set_result(400);
+                        resp.headers.content_length(error_data.size());
+                        resp.headers.insert("Content-Type", "application/x-protobuf");
+                        resp.write(error_data.c_str(), error_data.size());
+                        return 0;
+                    }
+                    
+                    // Add command to queue
+                    server_worker.data_cmd_queue.push(cmd);
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR("Failed to process binary delta data: `", e.what());
                 
                 // Create protobuf error response
                 dsync::ErrorResponse error_resp;
                 error_resp.set_error_code(400);
-                error_resp.set_error_message("Failed to read request body");
+                error_resp.set_error_message("Error processing binary delta data");
                 error_resp.set_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count());
                 
@@ -359,50 +539,7 @@ public:
                 return 0;
             }
 
-            ServerSyncWorker server_worker;
-            
-            // Use protobuf format - binary data is natively handled
-            try {
-                dsync::DataCmdQueue pb_queue;
-                if (!pb_queue.ParseFromString(request_body)) {
-                    LOG_ERROR("Failed to parse patch protobuf");
-                    
-                    // Create protobuf error response
-                    dsync::ErrorResponse error_resp;
-                    error_resp.set_error_code(400);
-                    error_resp.set_error_message("Invalid protobuf in request body");
-                    error_resp.set_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count());
-                    
-                    std::string error_data;
-                    error_resp.SerializeToString(&error_data);
-                    
-                    resp.set_result(400);
-                    resp.headers.content_length(error_data.size());
-                    resp.headers.insert("Content-Type", "application/x-protobuf");
-                    resp.write(error_data.c_str(), error_data.size());
-                    return 0;
-                }
-                deserialize_data_cmd_queue_from_protobuf(pb_queue, server_worker.data_cmd_queue);
-            } catch (const std::exception& e) {
-                LOG_ERROR("Failed to process patch protobuf: `", e.what());
-                
-                // Create protobuf error response
-                dsync::ErrorResponse error_resp;
-                error_resp.set_error_code(400);
-                error_resp.set_error_message("Error processing protobuf data");
-                error_resp.set_timestamp(std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count());
-                
-                std::string error_data;
-                error_resp.SerializeToString(&error_data);
-                
-                resp.set_result(400);
-                resp.headers.content_length(error_data.size());
-                resp.headers.insert("Content-Type", "application/x-protobuf");
-                resp.write(error_data.c_str(), error_data.size());
-                return 0;
-            }
+            server_worker.data_cmd_queue.setDone();
 
             int old_fd = open(basis_filename.c_str(), O_RDONLY);
             if (old_fd < 0) {
@@ -448,10 +585,6 @@ public:
                 return 0;
             }
             DEFER(close(output_fd));
-
-            resp.set_result(200);
-            resp.headers.content_length(3);
-            resp.write("ACK", 3);
 
             // Run patch_delta to generate new_file
             auto start = std::chrono::high_resolution_clock::now();

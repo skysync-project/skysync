@@ -368,7 +368,6 @@ public:
             const size_t buffer_size = 64 * 1024 * 1024;
             char *buffer = (char *)mi_malloc(buffer_size);
             DEFER(mi_free(buffer));
-
             auto delta_rtt_start = std::chrono::high_resolution_clock::now();
             
             while (total_written < content_length) {

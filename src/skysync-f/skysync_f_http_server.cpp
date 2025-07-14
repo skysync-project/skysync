@@ -1,5 +1,6 @@
 #include <sys/fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <netinet/tcp.h>
 #include <chrono>
 #include <map>
@@ -165,52 +166,142 @@ public:
         } else if (path_str == "/patch" && req.verb() == net::http::Verb::POST) {
             LOG_INFO("Handling /patch request for file: `", filename.c_str());
 
-            auto content_length = req.headers.content_length();
-            if (content_length == 0) {
-                LOG_WARN("No delta content in patch request body.");
-                resp.set_result(400); // Bad Request
-                resp.headers.content_length(56);
-                resp.write("Error: Delta content is required for patch operation.", 56);
+            // Create temporary file to stream incoming delta data
+            char tmp_file[] = "/tmp/skysyncf-server-delta-XXXXXX";
+            int tmp_fd = mkstemp(tmp_file);
+            if (tmp_fd < 0) {
+                LOG_ERROR("Failed to create temporary file for streaming delta data, error: `(`)", errno, strerror(errno));
+                resp.set_result(500);
+                resp.headers.content_length(42);
+                resp.write("Error: Failed to create temporary file", 42);
                 return 0;
+            }
+            DEFER(close(tmp_fd); unlink(tmp_file));
+
+            // Stream incoming HTTP request data directly to temporary file
+            size_t content_length = req.headers.content_length();
+
+            size_t total_written = 0;
+            const size_t buffer_size = 64 * 1024 * 1024;
+            char *buffer = (char *)mi_malloc(buffer_size);
+            DEFER(mi_free(buffer));
+            double server_processing_time = 0.0;
+            auto delta_rtt_start = std::chrono::high_resolution_clock::now();
+
+            while (total_written < content_length) {
+                size_t to_read = std::min(buffer_size, content_length - total_written);
+                ssize_t bytes_read = req.read(buffer, to_read);
+                if (bytes_read <= 0) {
+                    LOG_ERROR("Failed to read request data for /patch. Expected: `, Read: `", to_read, bytes_read);
+                    resp.set_result(400);
+                    resp.headers.content_length(35);
+                    resp.write("Error: Failed to read request body", 35);
+                    return 0;
+                }
+
+                ssize_t bytes_written = write(tmp_fd, buffer, bytes_read);
+                if (bytes_written != bytes_read) {
+                    LOG_ERROR("Failed to write to temporary file. Expected: `, Written: `", bytes_read, bytes_written);
+                    resp.set_result(500);
+                    resp.headers.content_length(42);
+                    resp.write("Error: Failed to write to temporary file", 42);
+                    return 0;
+                }
+                
+                total_written += bytes_read;
             }
 
-            std::string request_body;
-            request_body.resize(content_length);
-            ssize_t bytes_read = req.read((char*)request_body.data(), content_length);
-            if (bytes_read != (ssize_t)content_length) {
-                LOG_ERROR("Failed to read delta content from request body. Expected: `, Read: `", content_length, bytes_read);
-                resp.set_result(400); // Bad Request
-                resp.headers.content_length(54);
-                resp.write("Error: Failed to read delta content from request body.", 54);
+            // Reset file position to beginning for reading
+            if (lseek(tmp_fd, 0, SEEK_SET) < 0) {
+                LOG_ERROR("Failed to seek to beginning of temporary file, error: `(`)", errno, strerror(errno));
+                resp.set_result(500);
+                resp.headers.content_length(42);
+                resp.write("Error: Failed to seek temporary file", 42);
                 return 0;
             }
-            Delta delta_proto;
-            if (!delta_proto.ParseFromString(request_body)) {
-                LOG_ERROR("Failed to parse delta from Protobuf");
-                resp.set_result(400); // Bad Request
-                return 0;
-            }
+            auto delta_rtt_end = std::chrono::high_resolution_clock::now();
+            auto diff = std::chrono::duration<double>(delta_rtt_end - delta_rtt_start).count();
 
+            std::string ack_response = "ACK-" + std::to_string(diff);
             resp.set_result(200); // OK
-            resp.headers.content_length(3); // Set content length before writing
-            resp.write("ACK", 3);
+            resp.headers.content_length(ack_response.size());
+            resp.write(ack_response.c_str(), ack_response.size());
 
             ServerSkySyncFWorker server_worker(0);
             
-            for (const auto& cmd_proto : delta_proto.commands()) {
-                data_cmd cmd;
-                cmd.cmd = static_cast<CMD_TYPE>(cmd_proto.cmd());
-                cmd.offset = cmd_proto.offset();
-                cmd.length = cmd_proto.length();
-                cmd.end_of_stream = cmd_proto.end_of_stream();
-
-                if (cmd.cmd == CMD_LITERAL) {
-                    cmd.data = (uint8_t*)mi_malloc(cmd.length);
-                    memcpy(cmd.data, cmd_proto.data().c_str(), cmd.length);
+            // Parse binary data from temporary file and populate data_cmd_queue
+            try {
+                size_t bytes_processed = 0;
+                while (bytes_processed < content_length) {
+                    data_cmd cmd;
+                    
+                    // Read command type (1 byte)
+                    ssize_t read_result = read(tmp_fd, &cmd.cmd, sizeof(cmd.cmd));
+                    if (read_result != sizeof(cmd.cmd)) {
+                        LOG_ERROR("Failed to read command type from temporary file");
+                        break;
+                    }
+                    bytes_processed += sizeof(cmd.cmd);
+                    
+                    // Read offset (8 bytes)
+                    read_result = read(tmp_fd, &cmd.offset, sizeof(cmd.offset));
+                    if (read_result != sizeof(cmd.offset)) {
+                        LOG_ERROR("Failed to read offset from temporary file");
+                        break;
+                    }
+                    bytes_processed += sizeof(cmd.offset);
+                    
+                    // Read length (8 bytes)
+                    read_result = read(tmp_fd, &cmd.length, sizeof(cmd.length));
+                    if (read_result != sizeof(cmd.length)) {
+                        LOG_ERROR("Failed to read length from temporary file");
+                        break;
+                    }
+                    bytes_processed += sizeof(cmd.length);
+                    
+                    // Initialize data pointer
+                    cmd.data = nullptr;
+                    cmd.end_of_stream = false;
+                    
+                    // For CMD_LITERAL, read the data bytes
+                    if (cmd.cmd == CMD_LITERAL) {
+                        if (cmd.length > 0) {
+                            cmd.data = (uint8_t *)mi_malloc(cmd.length);
+                            
+                            size_t data_read = 0;
+                            while (data_read < cmd.length) {
+                                ssize_t read_size = read(tmp_fd, cmd.data + data_read, cmd.length - data_read);
+                                if (read_size <= 0) {
+                                    LOG_ERROR("Failed to read literal data from temporary file");
+                                    mi_free(cmd.data);
+                                    resp.set_result(400);
+                                    resp.headers.content_length(40);
+                                    resp.write("Error: Failed to read binary data", 40);
+                                    return 0;
+                                }
+                                data_read += read_size;
+                            }
+                            bytes_processed += cmd.length;
+                        }
+                    } else if (cmd.cmd != CMD_COPY) {
+                        LOG_ERROR("Invalid command type: `", (int)cmd.cmd);
+                        resp.set_result(400);
+                        resp.headers.content_length(35);
+                        resp.write("Error: Invalid command type", 35);
+                        return 0;
+                    }
+                    
+                    // Add command to queue
+                    server_worker.data_cmd_queue.push(cmd);
                 }
-
-                server_worker.data_cmd_queue.push(cmd);
+            } catch (const std::exception& e) {
+                LOG_ERROR("Failed to process binary delta data: `", e.what());
+                resp.set_result(400);
+                resp.headers.content_length(45);
+                resp.write("Error: Failed to process binary delta data", 45);
+                return 0;
             }
+            
             server_worker.data_cmd_queue.setDone();
 
             int fd = open(filename.c_str(), O_RDONLY);

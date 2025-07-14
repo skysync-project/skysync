@@ -7,6 +7,7 @@
 #include <photon/photon.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include <photon/net/socket.h>
 #include <photon/net/http/client.h>
@@ -199,24 +200,120 @@ int perform_skysyncc_client_flow(const std::string& server_ip, uint64_t server_p
     diff_1 = std::chrono::high_resolution_clock::now() - start;
     LOG_INFO("Delta generation completed in ` seconds", diff_1.count());
 
-    dsync::DataCmdQueue data_cmd_queue_pb = serialize_data_cmd_queue_to_protobuf(client_worker.data_cmd_queue);
-    std::string protobuf_data;
-    if (!data_cmd_queue_pb.SerializeToString(&protobuf_data)) {
-        LOG_ERROR("Failed to serialize data_cmd_queue to protobuf");
+    // Create a temporary file to store the data_cmd_queue
+    char tmp_file[] = "/tmp/skysync-c-delta-XXXXXX";
+    int tmp_fd = mkstemp(tmp_file);
+    if (tmp_fd < 0) {
+        LOG_ERROR("Failed to create temporary file, error: `(`)", errno, strerror(errno));
         return -1;
     }
     
-    LOG_INFO("Delta generated. Protobuf data length: `", protobuf_data.size());
+    // Write data_cmd_queue to the temporary file directly
+    while (!client_worker.data_cmd_queue.empty()) {
+        data_cmd cmd = client_worker.data_cmd_queue.pop();
+        if (cmd.cmd == CMD_COPY) {
+            ssize_t written = write(tmp_fd, &cmd.cmd, sizeof(cmd.cmd));
+            if (written != sizeof(cmd.cmd)) {
+                LOG_ERROR("Failed to write command to temporary file, error: `(`)", errno, strerror(errno));
+                close(tmp_fd);
+                unlink(tmp_file);
+                return -1;
+            }
+            written = write(tmp_fd, &cmd.offset, sizeof(cmd.offset));
+            if (written != sizeof(cmd.offset)) {
+                LOG_ERROR("Failed to write offset to temporary file, error: `(`)", errno, strerror(errno));
+                close(tmp_fd);
+                unlink(tmp_file);
+                return -1;
+            }
+            written = write(tmp_fd, &cmd.length, sizeof(cmd.length));
+            if (written != sizeof(cmd.length)) {
+                LOG_ERROR("Failed to write length to temporary file, error: `(`)", errno, strerror(errno));
+                close(tmp_fd);
+                unlink(tmp_file);
+                return -1;
+            }
+        } else if (cmd.cmd == CMD_LITERAL) {
+            ssize_t written = write(tmp_fd, &cmd.cmd, sizeof(cmd.cmd));
+            if (written != sizeof(cmd.cmd)) {
+                LOG_ERROR("Failed to write command to temporary file, error: `(`)", errno, strerror(errno));
+                if (cmd.data) mi_free(cmd.data);
+                close(tmp_fd);
+                unlink(tmp_file);
+                return -1;
+            }
+            written = write(tmp_fd, &cmd.offset, sizeof(cmd.offset));
+            if (written != sizeof(cmd.offset)) {
+                LOG_ERROR("Failed to write offset to temporary file, error: `(`)", errno, strerror(errno));
+                if (cmd.data) mi_free(cmd.data);
+                close(tmp_fd);
+                unlink(tmp_file);
+                return -1;
+            }
+            written = write(tmp_fd, &cmd.length, sizeof(cmd.length));
+            if (written != sizeof(cmd.length)) {
+                LOG_ERROR("Failed to write length to temporary file, error: `(`)", errno, strerror(errno));
+                if (cmd.data) mi_free(cmd.data);
+                close(tmp_fd);
+                unlink(tmp_file);
+                return -1;
+            }
+            size_t data_written = 0;
+            if (cmd.data && cmd.length > 0) {
+                while (data_written < cmd.length) {
+                    ssize_t write_size = write(tmp_fd, cmd.data + data_written, cmd.length - data_written);
+                    if (write_size < 0) {
+                        LOG_ERROR("Failed to write data to temporary file, error: `(`)", errno, strerror(errno));
+                        mi_free(cmd.data);
+                        close(tmp_fd);
+                        unlink(tmp_file);
+                        return -1;
+                    }
+                    data_written += write_size;
+                }
+                // Free the data after writing it to the temporary file
+                mi_free(cmd.data);
+            }
+        }
+    }
 
-    // Step 3: Send delta with protobuf data
+    // Get file size
+    struct stat st;
+    if (fstat(tmp_fd, &st) < 0) {
+        LOG_ERROR("Failed to fstat temporary file, error: `(`)", errno, strerror(errno));
+        close(tmp_fd);
+        unlink(tmp_file);
+        return -1;
+    }
+    close(tmp_fd); // Done with fd, will use path from now on
+    DEFER(unlink(tmp_file)); // Ensure cleanup on scope exit
+
+    off_t file_size = st.st_size;
+
+    // Step 3: Send delta using streaming
     LOG_INFO("Step 3: Sending delta to server...");
     std::string patch_url = base_url + "/patch?basis_filename=" + basis_filename;
     {
+        photon::fs::IFileSystem* fs = photon::fs::new_localfs_adaptor();
+        if (!fs) {
+            LOG_ERROR("Failed to create new_localfs_adaptor");
+            return -1;
+        }
+        DEFER(delete fs);
+
+        photon::fs::IFile* file_stream = fs->open(tmp_file, O_RDONLY);
+        if (!file_stream) {
+            LOG_ERROR("Failed to open temporary file '`' for streaming", tmp_file);
+            return -1;
+        }
+        DEFER(delete file_stream);
+
         net::http::Client::OperationOnStack<8 * 1024> operation(client, net::http::Verb::POST, patch_url);
         auto op = &operation;
         
-        op->req.headers.insert("Content-Type", "application/x-protobuf");
-        op->set_body(protobuf_data.c_str(), protobuf_data.size());
+        op->req.headers.insert("Content-Type", "application/octet-stream");
+        op->req.headers.content_length(file_size);
+        op->body_stream = file_stream;
 
         auto delta_rtt_start = std::chrono::high_resolution_clock::now();
 
@@ -247,19 +344,31 @@ int perform_skysyncc_client_flow(const std::string& server_ip, uint64_t server_p
         }
         
         // Read success response
+        double server_processing_time = 0.0;
         size_t resp_len = op->resp.headers.content_length();
         if (resp_len > 0) {
             std::string response_data(resp_len, '\0');
             ssize_t resp_read = op->resp.read(response_data.data(), resp_len);
             if (resp_read > 0) {
                 LOG_INFO("Server response received (` bytes)", resp_read);
+
+                std::string response_str(response_data.data(), resp_read);
+                if (response_str.length() >= 4 && response_str.substr(0, 4) == "ACK-") {
+                    try {
+                        server_processing_time = std::stod(response_str.substr(4));
+                    } catch (const std::exception& e) {
+                        LOG_WARN("Failed to parse server processing time from response: `", response_str.c_str());
+                    }
+                } else {
+                    LOG_INFO("Server response: `", response_str.c_str());
+                }
             }
         }
 
         // End timing for Delta RTT - after complete HTTP response is received
         auto delta_rtt_end = std::chrono::high_resolution_clock::now();
         auto diff = std::chrono::duration<double>(delta_rtt_end - delta_rtt_start).count();
-        LOG_INFO("Delta RTT (Client-side): ` seconds", diff);
+        LOG_INFO("Delta RTT (Client-side): ` seconds", diff - server_processing_time);
         
         LOG_INFO("Delta sent. Server responded with status code: `", op->resp.status_code());
     }

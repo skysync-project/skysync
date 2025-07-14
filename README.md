@@ -120,7 +120,7 @@ On the client machine (which holds the new file version), run the corresponding 
 
 The available clients are `rsync_http_client`, `dsync_http_client`, `skysync_f_http_client`, and `skysync_c_http_client`.
 
-**Artifacts Functional**: All HTTP server and client executables run successfully. Upon completion, a reconstructed file named `*.new` is generated on the server. This file should be the same size as the new file on the client.
+**Functional**: All HTTP server and client executables run successfully. Upon completion, a reconstructed file named `*.new` is generated on the server. This file should be the same size as the new file on the client.
 
 The server and client executables also produce detailed logs for analysis. An example of the log output is shown below:
 

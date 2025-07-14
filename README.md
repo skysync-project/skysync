@@ -14,7 +14,9 @@ We conduct our experiments on two Alibaba Cloud Elastic Compute Service (ECS) in
 
 Micro-benchmark dataset: [dataset1](https://drive.google.com/file/d/15LG597ucYeOmC-_DPGaii2lhcjmqo_DI/view?usp=sharing) and [dataset2](https://drive.google.com/file/d/1JfGl73FHaEaAyuqnym2lHn9zUU9Kf3us/view?usp=sharing).
 
-Real-world datasets: Due to privacy constraints and dataset size, the proprietary Chat and Nutsnap datasets are not included. Enwiki is publicly available and can be downloaded from [here](https://dumps.wikimedia.org/enwiki/). Other large datasets are currently exploring distribution methods due to size constraints.
+Real-world datasets: We upload these datasets to [Zenodo](https://doi.org/10.5281/zenodo.15867392).
+
+<!-- Due to privacy constraints and dataset size, the proprietary Chat and Nutsnap datasets are not included. Enwiki is publicly available and can be downloaded from [here](https://dumps.wikimedia.org/enwiki/). Other large datasets are currently exploring distribution methods due to size constraints. -->
 
 ### Build From Source
 
@@ -96,7 +98,11 @@ For `rsync`, `rs_signature_find_match` represents the searching phase, while oth
 
 For `skysync_f`, we provide fine-grained timing measurements by enabling the `SEARCHING_TIME` macro (defined in `src/skysync-f/skysync_f_worker.cpp`). This separates the searching phase from the calculation phase. However, when conducting comparative benchmarks against other systems, this macro must be disabled to avoid introducing measurement overhead that could skew performance results.
 
-You can continue to run the HTTP server on one machine and the client on another. On the machine acting as the server (which holds the new file version), start the appropriate HTTP server.
+**Functional**: All local executables execute successfully and generate `*.patch` files in the directory of the old files. These files should be the same size as the new files.
+
+**Results Reproduced**: The local performance results reported in the paper can be reproduced by running the local executables executables with the provided datasets including Fig.3(c-f), 7-11 and 13.
+
+You can continue to run the HTTP server on one machine and the client on another. On the machine acting as the server (which holds the old file version), start the appropriate HTTP server.
 
 ```bash
 # Start the HTTP server
@@ -105,11 +111,67 @@ You can continue to run the HTTP server on one machine and the client on another
 
 The server will listen on port 19876 by default. The available servers are `rsync_http_server`, `dsync_http_server`, `skysync_f_http_server`, and `skysync_c_http_server`.
 
-On the client machine (which holds the old file version), run the corresponding client to initiate synchronization. Note: The `--new_filename` argument specifies the full path to the target file on the server. 
+On the client machine (which holds the new file version), run the corresponding client to initiate sync. Note: The `--basis_filename` argument specifies the full path to the target file on the server. 
 
 ```bash
 # Start the HTTP client to sync files.
-./rsync_http_client -basis_filename=<old_file> --new_filename=<new_file> --server_ip=<ip> --server_port=19876 --hw=<0 or 1>
+./rsync_http_client --basis_filename=<old_file> --new_filename=<new_file> --server_ip=<ip> --server_port=19876 --hw=<0 or 1>
 ```
 
 The available clients are `rsync_http_client`, `dsync_http_client`, `skysync_f_http_client`, and `skysync_c_http_client`.
+
+**Artifacts Functional**: All HTTP server and client executables run successfully. Upon completion, a reconstructed file named `*.new` is generated on the server. This file should be the same size as the new file on the client.
+
+The server and client executables also produce detailed logs for analysis. An example of the log output is shown below:
+
+```bash
+# Log Info For Rsync HTTP Server
+2025/07/14 16:37:09.977713|INFO |th=000055B1DA4B2E50|epoll.cpp:319|new_epoll_engine:Init epoll event engine: master
+2025/07/14 16:37:09.977805|INFO |th=000055B1DA4B2E50|signal.cpp:292|sync_signal_init:signalfd initialized
+2025/07/14 16:37:09.977881|INFO |th=000055B1DA4B2E50|rsync_http_server.cpp:370|main:Rsync HTTP Server started on port 19876
+2025/07/14 16:37:13.136460|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:87|handle_request:Received request for target: /signature?file=/mnt/sync-test/100M/100MB&hw=1
+2025/07/14 16:37:13.136512|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:123|handle_request:Handling /signature request for file: /mnt/sync-test/100M/100MB with hw=1
+2025/07/14 16:37:13.136887|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:148|handle_request:Using hardware accelerated hashing algorithm
+2025/07/14 16:37:13.398454|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:172|handle_request:Signature generation completed in 0.2619 seconds
+2025/07/14 16:37:13.398602|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:196|handle_request:Signature generated and sent for file: /mnt/sync-test/100M/100MB (Request Key: /mnt/sync-test/100M/100MB_1752482233398480122)
+2025/07/14 16:37:13.399129|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:87|handle_request:Received request for target: /ack?file=/mnt/sync-test/100M/100MB
+2025/07/14 16:37:13.399141|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:286|handle_request:Handling /ack request
+2025/07/14 16:37:13.399148|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:318|handle_request:Signature RTT (Server-side): 0.0007 seconds for request key: /mnt/sync-test/100M/100MB_1752482233398480122
+2025/07/14 16:37:13.399163|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:332|handle_request:ACK processed for request key: /mnt/sync-test/100M/100MB_1752482233398480122
+2025/07/14 16:37:15.539339|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:87|handle_request:Received request for target: /patch?file=/mnt/sync-test/100M/100MB
+2025/07/14 16:37:15.539371|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:200|handle_request:Handling /patch request for file: /mnt/sync-test/100M/100MB
+2025/07/14 16:37:15.808577|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:79|write_file_content:File /mnt/sync-test/100M/100MB.new written successfully
+2025/07/14 16:37:15.808602|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:280|handle_request:Patch delta applied in 0.1859 seconds
+2025/07/14 16:37:15.808614|INFO |th=00007FE05EE1EBC0|rsync_http_server.cpp:282|handle_request:Patch applied and new file saved to: /mnt/sync-test/100M/100MB.new
+```
+
+```bash
+# Log Info For Rsync HTTP Client
+2025/07/14 16:37:13.129804|INFO |th=000055C77776DE50|epoll.cpp:319|new_epoll_engine:Init epoll event engine: master
+2025/07/14 16:37:13.129868|INFO |th=000055C77776DE50|signal.cpp:292|sync_signal_init:signalfd initialized
+2025/07/14 16:37:13.129889|INFO |th=000055C77776DE50|rsync_http_client.cpp:35|perform_rsync_client_flow:Starting rsync client flow...
+2025/07/14 16:37:13.129896|INFO |th=000055C77776DE50|rsync_http_client.cpp:47|perform_rsync_client_flow:Using hardware accelerated hashing algorithm
+2025/07/14 16:37:13.129899|INFO |th=000055C77776DE50|rsync_http_client.cpp:53|perform_rsync_client_flow:Step 1: Requesting signature for /mnt/sync-test/100M/100MB from server...
+2025/07/14 16:37:13.135951|INFO |th=000055C77776DE50|epoll.cpp:319|new_epoll_engine:Init epoll event engine: cascading
+2025/07/14 16:37:13.135990|INFO |th=000055C77776DE50|epoll.cpp:319|new_epoll_engine:Init epoll event engine: cascading
+2025/07/14 16:37:13.398561|INFO |th=000055C77776DE50|rsync_http_client.cpp:88|perform_rsync_client_flow:Received request key: /mnt/sync-test/100M/100MB_1752482233398480122
+2025/07/14 16:37:13.399022|INFO |th=000055C77776DE50|rsync_http_client.cpp:107|perform_rsync_client_flow:Signature received.
+2025/07/14 16:37:13.399051|INFO |th=000055C77776DE50|rsync_http_client.cpp:111|perform_rsync_client_flow:Step 1.5: Sending ACK to server for request key: /mnt/sync-test/100M/100MB_1752482233398480122
+2025/07/14 16:37:13.439968|INFO |th=000055C77776DE50|rsync_http_client.cpp:137|perform_rsync_client_flow:ACK response: ACK_RECV
+2025/07/14 16:37:13.439975|INFO |th=000055C77776DE50|rsync_http_client.cpp:140|perform_rsync_client_flow:ACK sent successfully
+2025/07/14 16:37:13.439984|INFO |th=000055C77776DE50|rsync_http_client.cpp:145|perform_rsync_client_flow:Step 2: Generating delta for /mnt/sync-test/100M/100MB-insert-8MB...
+2025/07/14 16:37:15.494391|INFO |th=000055C77776DE50|rsync_http_client.cpp:171|perform_rsync_client_flow:Rolling and Delta generation completed in 2.0543 seconds
+2025/07/14 16:37:15.539159|INFO |th=000055C77776DE50|rsync_http_client.cpp:202|perform_rsync_client_flow:Delta generated.
+2025/07/14 16:37:15.539169|INFO |th=000055C77776DE50|rsync_http_client.cpp:205|perform_rsync_client_flow:Step 3: Sending delta to server...
+2025/07/14 16:37:15.539176|INFO |th=000055C77776DE50|rsync_http_client.cpp:211|perform_rsync_client_flow:Setting request body using set_body().
+2025/07/14 16:37:15.622655|INFO |th=000055C77776DE50|rsync_http_client.cpp:241|perform_rsync_client_flow:Server response: ACK
+2025/07/14 16:37:15.622663|INFO |th=000055C77776DE50|rsync_http_client.cpp:247|perform_rsync_client_flow:Delta RTT (Client-side): 0.0835 seconds
+2025/07/14 16:37:15.622671|INFO |th=000055C77776DE50|rsync_http_client.cpp:249|perform_rsync_client_flow:Delta sent. Server responded with status code: 200
+2025/07/14 16:37:15.622679|INFO |th=000055C77776DE50|rsync_http_client.cpp:252|perform_rsync_client_flow:Rsync client flow completed successfully.
+2025/07/14 16:37:15.625933|INFO |th=000055C77776DE50|epoll.cpp:85|~EventEngineEPoll:Finish event engine: epoll
+2025/07/14 16:37:15.625986|INFO |th=000055C77776DE50|epoll.cpp:85|~EventEngineEPoll:Finish event engine: epoll
+2025/07/14 16:37:15.626502|INFO |th=000055C77776DE50|signal.cpp:327|sync_signal_fini:signalfd finished
+2025/07/14 16:37:15.626507|INFO |th=000055C77776DE50|epoll.cpp:85|~EventEngineEPoll:Finish event engine: epoll
+```
+
+**Results Reproduced**: The network performance results are derived from the logs generated by the client and server executables. These logs contain detailed, per-phase timing information for the entire sync process such as Signature generation (Signature RTT), Rolling and Delta generation (Delta RTT), and Patch delta.

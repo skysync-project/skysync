@@ -1,4 +1,5 @@
 #include <sys/fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <netinet/tcp.h>
 #include <chrono>
@@ -228,19 +229,21 @@ public:
                 return 0;
             }
 
-            std::string delta_content;
+            // Create temporary file to stream incoming delta data
+            char tmp_file[] = "/tmp/rsync-server-delta-XXXXXX";
+            int tmp_fd = mkstemp(tmp_file);
+            if (tmp_fd < 0) {
+                LOG_ERROR("Failed to create temporary file for streaming delta data, error: `(`)", errno, strerror(errno));
+                resp.set_result(500); // Internal Server Error
+                resp.headers.content_length(45);
+                resp.write("Error: Failed to create temporary file.", 45);
+                return 0;
+            }
+            DEFER(close(tmp_fd); unlink(tmp_file));
+
+            // Stream incoming HTTP request data directly to temporary file
             auto content_length = req.headers.content_length();
-            if (content_length > 0) {
-                delta_content.resize(content_length);
-                ssize_t bytes_read = req.read((char*)delta_content.data(), content_length);
-                if (bytes_read != (ssize_t)content_length) {
-                    LOG_ERROR("Failed to read delta content from request body. Expected: `, Read: `", content_length, bytes_read);
-                    resp.set_result(400); // Bad Request
-                    resp.headers.content_length(54);
-                    resp.write("Error: Failed to read delta content from request body.", 54);
-                    return 0;
-                }
-            } else {
+            if (content_length <= 0) {
                 LOG_WARN("No delta content in patch request body.");
                 resp.set_result(400); // Bad Request
                 resp.headers.content_length(56);
@@ -248,9 +251,73 @@ public:
                 return 0;
             }
 
-            resp.set_result(200); // OK
-            resp.headers.content_length(3); // Set content length before writing
-            resp.write("ACK", 3);
+            size_t total_written = 0;
+            const size_t buffer_size = 64 * 1024 * 1024; // 64MB buffer
+            char *buffer = (char *)malloc(buffer_size);
+            if (!buffer) {
+                LOG_ERROR("Failed to allocate buffer for streaming delta data");
+                resp.set_result(500); // Internal Server Error
+                resp.headers.content_length(42);
+                resp.write("Error: Failed to allocate memory buffer.", 42);
+                return 0;
+            }
+            DEFER(free(buffer));
+            auto delta_rtt_start = std::chrono::high_resolution_clock::now();
+            
+            while (total_written < content_length) {
+                size_t to_read = std::min(buffer_size, content_length - total_written);
+                ssize_t bytes_read = req.read(buffer, to_read);
+                if (bytes_read <= 0) {
+                    LOG_ERROR("Failed to read request data for /patch. Expected: `, Read: `", to_read, bytes_read);
+                    resp.set_result(400); // Bad Request
+                    resp.headers.content_length(54);
+                    resp.write("Error: Failed to read delta content from request body.", 54);
+                    return 0;
+                }
+                
+                ssize_t bytes_written = write(tmp_fd, buffer, bytes_read);
+                if (bytes_written != bytes_read) {
+                    LOG_ERROR("Failed to write to temporary file. Expected: `, Written: `", bytes_read, bytes_written);
+                    resp.set_result(500); // Internal Server Error
+                    resp.headers.content_length(44);
+                    resp.write("Error: Failed to write to temporary file.", 44);
+                    return 0;
+                }
+                
+                total_written += bytes_read;
+            }
+
+            // Reset file position to beginning for reading
+            if (lseek(tmp_fd, 0, SEEK_SET) < 0) {
+                LOG_ERROR("Failed to seek to beginning of temporary file, error: `(`)", errno, strerror(errno));
+                resp.set_result(500); // Internal Server Error
+                resp.headers.content_length(44);
+                resp.write("Error: Failed to seek temporary file.", 44);
+                return 0;
+            }
+
+            auto delta_rtt_end = std::chrono::high_resolution_clock::now();
+            auto diff = std::chrono::duration<double>(delta_rtt_end - delta_rtt_start).count();
+
+            std::string ack_response = "ACK-" + std::to_string(diff);
+            resp.set_result(200);
+            resp.headers.content_length(ack_response.size());
+            resp.write(ack_response.c_str(), ack_response.size());
+
+            // Read delta data from temporary file
+            std::vector<char> delta_content(content_length);
+            ssize_t total_read = 0;
+            while (total_read < (ssize_t)content_length) {
+                ssize_t bytes_read = read(tmp_fd, delta_content.data() + total_read, content_length - total_read);
+                if (bytes_read <= 0) {
+                    LOG_ERROR("Failed to read delta data from temporary file. Expected: `, Read: `", content_length - total_read, bytes_read);
+                    resp.set_result(500); // Internal Server Error
+                    resp.headers.content_length(50);
+                    resp.write("Error: Failed to read delta data from temp file.", 50);
+                    return 0;
+                }
+                total_read += bytes_read;
+            }
 
             char* new_file_data = nullptr;
             size_t new_file_len = 0;

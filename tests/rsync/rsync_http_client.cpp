@@ -7,6 +7,7 @@
 #include <photon/photon.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include <photon/net/socket.h>
 #include <photon/net/http/client.h>
@@ -104,7 +105,7 @@ int perform_rsync_client_flow(const std::string& server_ip, uint64_t server_port
             return -1;
         }
         
-        LOG_INFO("Signature received. Length: `", sig_len);
+        LOG_INFO("Signature received.");
     }
     
     // Step 1.5: Send ACK to complete the round-trip timing
@@ -170,46 +171,43 @@ int perform_rsync_client_flow(const std::string& server_ip, uint64_t server_port
     std::chrono::duration<double> diff_1 = std::chrono::high_resolution_clock::now() - start;
     LOG_INFO("Rolling and Delta generation completed in ` seconds", diff_1.count());
 
-    int delta_fd = open(delta_file.c_str(), O_RDONLY);
-    if (delta_fd < 0) {
-        LOG_ERROR("Failed to open delta file `: `", delta_file.c_str(), strerror(errno));
+    // Get delta file size for streaming
+    struct stat st;
+    if (::stat(delta_file.c_str(), &st) < 0) {
+        LOG_ERROR("Failed to stat delta file `: `", delta_file.c_str(), strerror(errno));
         return -1;
     }
-    DEFER(close(delta_fd));
-
-    off_t delta_len = file_size(delta_fd);
+    off_t delta_len = st.st_size;
     if (delta_len <= 0) {
         LOG_ERROR("Delta file is empty or has invalid size: `", delta_len);
         return -1;
     }
-    char* delta_data = (char*)malloc(delta_len);
-    if (!delta_data) {
-        LOG_ERROR("Failed to allocate memory for delta data");
-        return -1;
-    }
-    DEFER(free(delta_data));
-
-    while (true) {
-        ssize_t bytes_read = read(delta_fd, delta_data, delta_len);
-        if (bytes_read < 0) {
-            LOG_ERROR("Failed to read delta file: `", strerror(errno));
-            return -1;
-        }
-        if (bytes_read == 0) {
-            break; // End of file
-        }
-    }
-    LOG_INFO("Delta generated. Length: `", delta_len);
+    LOG_INFO("Delta generated.");
     
-    // Step 3: Send Delta
+    // Step 3: Send Delta using streaming
     LOG_INFO("Step 3: Sending delta to server...");
     std::string patch_url = base_url + "/patch?file=" + basis_filename;
     {
+        photon::fs::IFileSystem* fs = photon::fs::new_localfs_adaptor();
+        if (!fs) {
+            LOG_ERROR("Failed to create new_localfs_adaptor");
+            return -1;
+        }
+        DEFER(delete fs);
+
+        photon::fs::IFile* file_stream = fs->open(delta_file.c_str(), O_RDONLY);
+        if (!file_stream) {
+            LOG_ERROR("Failed to open delta file '`' for streaming", delta_file.c_str());
+            return -1;
+        }
+        DEFER(delete file_stream);
+
         net::http::Client::OperationOnStack<8 * 1024> operation(client, net::http::Verb::POST, patch_url);
         auto op = &operation;
         
-        LOG_INFO("Setting request body using set_body(). Delta length: `", delta_len);
-        op->set_body(delta_data, delta_len);
+        op->req.headers.insert("Content-Type", "application/octet-stream");
+        op->req.headers.content_length(delta_len);
+        op->body_stream = file_stream;
 
         // Start timing for Delta RTT - right before HTTP request transmission
         auto delta_rtt_start = std::chrono::high_resolution_clock::now();
@@ -233,18 +231,32 @@ int perform_rsync_client_flow(const std::string& server_ip, uint64_t server_port
             return -1;
         }
         
-        // Read response body to ensure complete response is received
-        char response_buf[64];
-        ssize_t resp_read = op->resp.read(response_buf, sizeof(response_buf) - 1);
-        if (resp_read > 0) {
-            response_buf[resp_read] = '\0';
-            LOG_INFO("Server response: `", response_buf);
+        // Read success response
+        double server_processing_time = 0.0;
+        size_t resp_len = op->resp.headers.content_length();
+        if (resp_len > 0) {
+            std::string response_data(resp_len, '\0');
+            ssize_t resp_read = op->resp.read(response_data.data(), resp_len);
+            if (resp_read > 0) {
+                LOG_INFO("Server response received (` bytes)", resp_read);
+
+                std::string response_str(response_data.data(), resp_read);
+                if (response_str.length() >= 4 && response_str.substr(0, 4) == "ACK-") {
+                    try {
+                        server_processing_time = std::stod(response_str.substr(4));
+                    } catch (const std::exception& e) {
+                        LOG_WARN("Failed to parse server processing time from response: `", response_str.c_str());
+                    }
+                } else {
+                    LOG_INFO("Server response: `", response_str.c_str());
+                }
+            }
         }
         
         // End timing for Delta RTT - after complete HTTP response is received
         auto delta_rtt_end = std::chrono::high_resolution_clock::now();
         auto diff = std::chrono::duration<double>(delta_rtt_end - delta_rtt_start).count();
-        LOG_INFO("Delta RTT (Client-side): ` seconds", diff);
+        LOG_INFO("Delta RTT (Client-side): ` seconds", diff - server_processing_time);
         
         LOG_INFO("Delta sent. Server responded with status code: `", op->resp.status_code());
     }

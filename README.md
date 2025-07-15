@@ -54,7 +54,9 @@ make -j$(nproc)
 
 Upon successful compilation, all executables will be located in the `build/` directory.
 
-#### Run
+### Run
+
+#### Local Evaluation (Single-Machine)
 
 First, you can run the core logic of each algorithm on a single machine using the provided test executables including `rsync_test`, `dsync_test`, `skysync_f_test` and `skysync_c_test`. These tests measure the performance without network overhead.
 
@@ -98,9 +100,11 @@ For `rsync`, `rs_signature_find_match` represents the searching phase, while oth
 
 For `skysync_f`, we provide fine-grained timing measurements by enabling the `SEARCHING_TIME` macro (defined in `src/skysync-f/skysync_f_worker.cpp`). This separates the searching phase from the calculation phase. However, when conducting comparative benchmarks against other systems, this macro must be disabled to avoid introducing measurement overhead that could skew performance results.
 
-**Functional**: All local executables execute successfully and generate `*.patch` files in the directory of the old files. These files should be the same size as the new files.
+**Functional**: All local executables execute without errors and produce outputs matching the provided examples. Patch files (*.patch) are generated alongside the old-file directory and are the same size as the corresponding new files.
 
-**Results Reproduced**: The local performance results reported in the paper can be reproduced by running the local executables executables with the provided datasets including Fig.3(c-f), 7-11 and 13.
+**Results Reproduced**: The local performance results reported in the paper can be reproduced by running the local executables executables with the provided datasets.
+
+#### Network Evaluation (Client-Server)
 
 You can continue to run the HTTP server on one machine and the client on another. On the machine acting as the server (which holds the old file version), start the appropriate HTTP server.
 
@@ -120,9 +124,9 @@ On the client machine (which holds the new file version), run the corresponding 
 
 The available clients are `rsync_http_client`, `dsync_http_client`, `skysync_f_http_client`, and `skysync_c_http_client`.
 
-**Functional**: All HTTP server and client executables run successfully. Upon completion, a reconstructed file named `*.new` is generated on the server. This file should be the same size as the new file on the client.
+**Functional**: All HTTP server and client executables run correctly and produce outputs consistent with the examples. On the server side, new files with extension `*.new` are generated; these match the size of the client's new files.
 
-The server and client executables also produce detailed logs for analysis. An example of the log output is shown below:
+The server and client executables should produce detailed logs for analysis. An example of the log output is shown below:
 
 ```bash
 # Log Info For Rsync HTTP Server

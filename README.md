@@ -22,6 +22,7 @@ Real-world datasets: We upload these datasets to [Zenodo](https://doi.org/10.528
 
 #### Requirements
 
+- gcc == 11.4.0
 - cmake >= 3.6
 - librsync >= 2.3.4
 - Intel ISA-L >= 2.30

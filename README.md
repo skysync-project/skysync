@@ -103,7 +103,7 @@ For `skysync_f`, we provide fine-grained timing measurements by enabling the `SE
 
 **Functional**: All local executables execute without errors and produce outputs matching the provided examples. Patch files (*.patch) are generated alongside the old-file directory and are the same size as the corresponding new files.
 
-**Results Reproduced**: The local performance results reported in the paper can be reproduced by running the local executables executables with the provided datasets for Fig.3(c)-(f), 7-11 and 13.
+**Results Reproduced**: The local performance results reported in the paper can be reproduced by running the local executables with the provided datasets for Fig.3(c)-(f), 7-11 and 13.
 
 #### Network Evaluation (Client-Server)
 

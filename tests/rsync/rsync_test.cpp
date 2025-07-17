@@ -73,9 +73,18 @@ int main(int argc, char** argv) {
     size_t file_s = file_size(old_fd);
     char* sig_data = nullptr;
     size_t sig_len = 0;
+    std::string filename = argv[1];
+    std::string base_filename = filename.substr(filename.find_last_of("/\\") + 1);
+    std::string sig_file = "/tmp/" + base_filename + ".sig";
+    // Delete any existing signature file
+    std::remove(sig_file.c_str());
+
+    std::string rollsum = "rollsum";
+    std::string sig_hash = hw ? "md4" : "blake2";
 
     auto start1 = std::chrono::high_resolution_clock::now();
-    rs_result ret = rsyncx_signature_mem((char*)mapped_file_content, file_s, &sig_data, &sig_len, hw);
+    // rs_result ret = rsyncx_signature_mem((char*)mapped_file_content, file_s, &sig_data, &sig_len, hw);
+    rs_result ret = rsyncx_signature(filename.c_str(), sig_file.c_str(), sig_hash.c_str(), rollsum.c_str(), hw);
     std::chrono::duration<double> diff_1 = std::chrono::high_resolution_clock::now() - start1;
     printf("Server Signature generation completed in %f seconds\n", diff_1.count());
 
@@ -85,10 +94,30 @@ int main(int argc, char** argv) {
     char* delta_data = nullptr;
     size_t delta_len = 0;
 
+    std::string new_filename = argv[2];
+    std::string delta_file = "/tmp/" + base_filename + ".delta";
+    std::remove(delta_file.c_str()); // Delete any existing delta file
+
     auto start2 = std::chrono::high_resolution_clock::now();
-    rs_result rsync_ret = rsyncx_delta_mem(sig_data, sig_len, new_file_content, new_file_len, &delta_data, &delta_len);
+    // rs_result rsync_ret = rsyncx_delta_mem(sig_data, sig_len, new_file_content, new_file_len, &delta_data, &delta_len);
+    rs_result rsync_ret = rsyncx_delta(sig_file.c_str(), new_filename.c_str(), delta_file.c_str());
     std::chrono::duration<double> diff_2 = std::chrono::high_resolution_clock::now() - start2;
     printf("Client Rolling and Delta generation completed in %f seconds\n", diff_2.count());
+
+    // Read delta file to delta_data
+    int delta_fd = open(delta_file.c_str(), O_RDONLY);
+    if (delta_fd == -1) {
+        printf("open delta file %s failed\n", delta_file.c_str());
+        exit(1);
+    }
+    delta_len = file_size(delta_fd);
+    delta_data = (char*)malloc(delta_len);
+    ssize_t bytes_read = read(delta_fd, delta_data, delta_len);
+    if (bytes_read != (ssize_t)delta_len) {
+        printf("read delta file %s failed, expected %zu bytes, got %zd bytes\n", delta_file.c_str(), delta_len, bytes_read);
+        free(delta_data);
+        exit(1);
+    }
 
     /* server */
     char* new_file_data = nullptr;
@@ -113,5 +142,8 @@ int main(int argc, char** argv) {
     close(old_fd);
     close(new_fd);
     close(output_fd);
+    if (mapped_file_content) unmap_file(old_fd, mapped_file_content);
+    if (new_file_content) unmap_file(new_fd, new_file_content);
+    close(delta_fd);
     return 0;
 }

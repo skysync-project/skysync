@@ -126,7 +126,13 @@ public:
             char* sig_data = nullptr;
             size_t sig_len = 0;
             auto start = std::chrono::high_resolution_clock::now();
-            std::string sig_file = filename + ".sig";
+
+            std::string base_filename = filename.substr(filename.find_last_of("/\\") + 1);
+            std::string sig_file = "/tmp/" + base_filename + ".sig";
+            // Delete any existing signature file
+            std::remove(sig_file.c_str());
+
+            // std::string sig_file = filename + ".sig";
             // if sig_file exists, delete it
             auto fs = fs::new_localfs_adaptor();
             if (!fs) {

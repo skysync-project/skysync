@@ -145,7 +145,12 @@ int perform_rsync_client_flow(const std::string& server_ip, uint64_t server_port
     // Step 2: Generate Delta
     LOG_INFO("Step 2: Generating delta for `...", new_filename.c_str());
     
-    std::string sig_name = basis_filename + ".sig";
+    // std::string sig_name = basis_filename + ".sig";
+    std::string base_filename = basis_filename.substr(basis_filename.find_last_of("/\\") + 1);
+    std::string sig_name = "/tmp/" + base_filename + ".sig";
+    // Delete any existing signature file
+    std::remove(sig_name.c_str());
+
     int fd = open(sig_name.c_str(), O_CREAT | O_RDWR, 0644);
     if (fd < 0) {
         LOG_INFO("Failed to open signature file `: `", sig_name.c_str(), strerror(errno));
@@ -153,8 +158,9 @@ int perform_rsync_client_flow(const std::string& server_ip, uint64_t server_port
     }
     DEFER(close(fd));
 
-    std::string delta_file = basis_filename + ".delta";
-    // Delete any existing delta file
+    std::string delta_file = "/tmp/" + base_filename + ".delta";
+    std::remove(delta_file.c_str()); // Delete any existing delta file
+
     auto fs = fs::new_localfs_adaptor();
     if (!fs) {
         LOG_ERROR("Failed to create local filesystem adaptor");

@@ -97,7 +97,7 @@ perf record -F5000 -g ./rsync_test
 perf report -F overhead,symbol
 ```
 
-For `rsync`, `rs_signature_find_match` represents the searching phase, while others including `rs_delta_s_scan`, `rs_mdfour`, `blake2b_compress`, `RollsumUpdate`, `memmove/memcopy` and `page_cache` management represent the calculation phase.
+For `rsync`, `rs_signature_find_match` represents the searching phase. Others including `rs_delta_s_scan`, `rs_mdfour`, `blake2b_compress`, `RollsumUpdate` as well as related low-level operations like `memmove/memcpy` and page cache management, represent the calculation phase.
 
 For `skysync_f`, we provide fine-grained timing measurements by enabling the `SEARCHING_TIME` macro (defined in `src/skysync-f/skysync_f_worker.cpp`). This separates the searching phase from the calculation phase. However, when conducting comparative benchmarks against other systems, this macro must be disabled to avoid introducing measurement overhead that could skew performance results.
 

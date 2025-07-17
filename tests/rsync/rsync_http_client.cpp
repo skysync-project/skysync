@@ -158,8 +158,11 @@ int perform_rsync_client_flow(const std::string& server_ip, uint64_t server_port
     }
     DEFER(close(fd));
 
+    // Write signature data to file
+    ssize_t written = write(fd, sig_data, sig_len);
+
     std::string delta_file = "/tmp/" + base_filename + ".delta";
-    std::remove(delta_file.c_str()); // Delete any existing delta file
+    // std::remove(delta_file.c_str()); // Delete any existing delta file
 
     auto fs = fs::new_localfs_adaptor();
     if (!fs) {

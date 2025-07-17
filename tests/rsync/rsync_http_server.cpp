@@ -199,6 +199,8 @@ public:
             resp.headers.insert("X-Request-Key", request_key);
             
             resp.write(sig_data, sig_len);
+
+            std::remove(sig_file.c_str());
             
             LOG_INFO("Signature generated and sent for file: ` (Request Key: `)", filename.c_str(), request_key.c_str());
             if (sig_data) free(sig_data);

@@ -139,6 +139,9 @@ int main(int argc, char** argv) {
     std::chrono::duration<double> diff_3 = std::chrono::high_resolution_clock::now() - start3;
     printf("Server Patch delta applied in %f seconds\n", diff_3.count());
 
+    std::remove(sig_file.c_str());
+    std::remove(delta_file.c_str());
+    
     close(old_fd);
     close(new_fd);
     close(output_fd);

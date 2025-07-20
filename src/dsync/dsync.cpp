@@ -870,7 +870,7 @@ void ServerSyncWorker::compare_weak_lhash(int fd, DataQueue<uint32_t> &new_crc32
         this->lhash_table = nullptr;
     }
 
-    printf("Weak Matched chunks: %lu\n", matched_nums);
+    // printf("Weak Matched chunks: %lu\n", matched_nums);
 }
 
 void ClientSyncWorker::lhash_builder(DataQueue<one_cdc> &csums_queue, DataQueue<uint32_t> &crc32_queue, uint64_t chunk_nums) {
@@ -974,5 +974,5 @@ void ClientSyncWorker::compare_sha1_lhash(int fd, DataQueue<matched_item_rpc_1> 
         this->lhash_table = nullptr;
     }
 
-    printf("Strong Matched chunks: %lu\n", strong_matched_nums);
+    // printf("Strong Matched chunks: %lu\n", strong_matched_nums);
 }

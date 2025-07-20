@@ -23,11 +23,12 @@ Real-world datasets: We upload these datasets to [Zenodo](https://doi.org/10.528
 #### Requirements
 
 - gcc == 11.4.0
-- cmake >= 3.6
+- cmake >= 3.18
 - librsync >= 2.3.4
 - Intel ISA-L >= 2.30
 - photonlibos >= 0.8.1
 - mimalloc >= 2.1.7
+- liburing == 2.3
 - other dependencies:
     `sudo apt install git cmake autoconf pkg-config libtool libcurl4-openssl-dev libssl-dev libpopt-dev libbz2-dev libb2-dev doxygen nasm build-essential libaio-dev zlib1g-dev libext2fs-dev texinfo libevent-dev libev-dev libgflags-dev libprotobuf-dev libprotoc-dev protobuf-compiler libleveldb-dev libgoogle-perftools-dev hwloc libgtest-dev libgmock-dev libfuse-dev libgsasl7-dev`
 

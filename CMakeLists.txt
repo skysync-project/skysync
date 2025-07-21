@@ -307,6 +307,23 @@ add_executable(skysync_c_test
                )
 target_link_libraries(skysync_c_test ${ZLIB_LIBRARIES} OpenSSL::Crypto ${ISAL} ${ISAL_crypto} ${PTHREAD} photon_shared mimalloc TBB::tbb)
 
+add_executable(bounds_check_test
+               tests/skysync-c/bounds_check_test.cpp
+               src/skysync-c/skysync_c_worker.cpp
+               src/skysync-f/skysync_f_worker.cpp
+               src/skysync-f/fsc_hash.cpp
+               src/skysync_c.cpp
+               src/crc32/crc32.c
+               src/crc32/crc32c.c
+               src/tools.cpp
+               src/fastcdc.cpp
+               src/ring_buffer.c
+               src/dsync/dsync.cpp
+               src/linked_hash.cpp
+               ${blake3_SOURCES}
+               )
+target_link_libraries(bounds_check_test ${ZLIB_LIBRARIES} OpenSSL::Crypto ${ISAL} ${ISAL_crypto} ${PTHREAD} photon_shared mimalloc TBB::tbb)
+
 add_executable(serial_cdc_test
                tests/skysync-c/serial_cdc_test.cpp
                src/skysync-c/skysync_c_worker.cpp

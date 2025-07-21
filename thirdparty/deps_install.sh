@@ -8,6 +8,7 @@ cd $DIR
 ./isa-l_install.sh
 ./isa-l_crypto_install.sh
 ./brpc_build.sh
+# ./liburing_uninstall.sh
 ./liburing_install.sh
 ./photon_build.sh
 ./tbb_install.sh

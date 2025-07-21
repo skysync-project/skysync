@@ -61,30 +61,30 @@ private:
     void process_chunk_with_fsc(char *map, uint64_t offset, uint64_t chunk_length,
                                file_fsc *fsc, uint64_t fsc_index,
                                uint64_t mid_window_size, uint32_t &cached_crc32,
-                               struct one_cdc &cdc);
+                               struct one_cdc &cdc, uint64_t file_size);
     
     void handle_exact_offset_match(char *map, uint64_t offset, uint64_t chunk_length,
                                   file_fsc *fsc, uint64_t fsc_index,
-                                  uint32_t &cached_crc32, struct one_cdc &cdc);
+                                  uint32_t &cached_crc32, struct one_cdc &cdc, uint64_t file_size);
     
     void handle_first_half_window(char *map, uint64_t offset, uint64_t chunk_length,
                                  file_fsc *fsc, uint64_t fsc_index,
                                  uint64_t mid_window_size, uint32_t &cached_crc32,
-                                 struct one_cdc &cdc);
+                                 struct one_cdc &cdc, uint64_t file_size);
     
     void handle_second_half_window(char *map, uint64_t offset, uint64_t chunk_length,
                                   file_fsc *fsc, uint64_t fsc_index,
                                   uint64_t mid_window_size, uint32_t &cached_crc32,
-                                  struct one_cdc &cdc);
+                                  struct one_cdc &cdc, uint64_t file_size);
    void calculate_weak_hash_for_extended_chunk(char *map, uint64_t offset, uint64_t chunk_length,
                                              file_fsc *fsc, uint64_t fsc_index,
                                              uint64_t mid_window_size, uint32_t &cached_crc32,
-                                             struct one_cdc &cdc);
+                                             struct one_cdc &cdc, uint64_t file_size);
    void calculate_weak_hash_for_second_half(char *map, uint64_t offset, uint64_t chunk_length,
                                           file_fsc *fsc, uint64_t fsc_index,
                                           uint64_t mid_window_size, uint32_t &cached_crc32,
                                           struct one_cdc &cdc, uint64_t next_fsc_offset,
-                                          uint64_t chunk_end);
+                                          uint64_t chunk_end, uint64_t file_size);
 };
 
 class ClientSkySyncCWorker : public SkySyncCWorker {

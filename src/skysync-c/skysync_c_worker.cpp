@@ -95,7 +95,7 @@ void SkySyncCWorker::serial_cdc_sw(int fd, DataQueue<one_cdc> &csums_queue, file
         } else {
             // Process chunk using FSC optimization
             process_chunk_with_fsc(map, offset, chunk_length, fsc, fsc_index,
-                                 mid_window_size, cached_crc32, cdc);
+                                 mid_window_size, cached_crc32, cdc, fs);
         }
 
         offset += chunk_length;
@@ -126,25 +126,25 @@ void SkySyncCWorker::serial_cdc_sw(int fd, DataQueue<one_cdc> &csums_queue, file
  * FSC values and CRC32 operations for content-defined chunking.
  */
 void SkySyncCWorker::process_chunk_with_fsc(char *map, uint64_t offset, uint64_t chunk_length,
-                                          file_fsc *fsc, uint64_t fsc_index,
-                                          uint64_t mid_window_size, uint32_t &cached_crc32,
-                                          struct one_cdc &cdc) {
+                                           file_fsc *fsc, uint64_t fsc_index,
+                                           uint64_t mid_window_size, uint32_t &cached_crc32,
+                                           struct one_cdc &cdc, uint64_t file_size) {
     const uint64_t fsc_offset = fsc->fsc_array[fsc_index].offset;
     const uint64_t mid_fsc_offset = fsc_offset + mid_window_size;
     
     // Case 1: Offset exactly matches FSC entry
     if (fsc_offset == offset) {
-        handle_exact_offset_match(map, offset, chunk_length, fsc, fsc_index, cached_crc32, cdc);
+        handle_exact_offset_match(map, offset, chunk_length, fsc, fsc_index, cached_crc32, cdc, file_size);
     }
     // Case 2: Offset is within first half of FSC window
     else if (offset > fsc_offset && offset < mid_fsc_offset) {
         handle_first_half_window(map, offset, chunk_length, fsc, fsc_index,
-                                mid_window_size, cached_crc32, cdc);
+                                mid_window_size, cached_crc32, cdc, file_size);
     }
     // Case 3: Offset is in second half or beyond FSC window
     else if (offset >= mid_fsc_offset) {
         handle_second_half_window(map, offset, chunk_length, fsc, fsc_index,
-                                 mid_window_size, cached_crc32, cdc);
+                                 mid_window_size, cached_crc32, cdc, file_size);
     }
     // Case 4: Fallback - calculate CRC directly
     else {
@@ -156,19 +156,41 @@ void SkySyncCWorker::process_chunk_with_fsc(char *map, uint64_t offset, uint64_t
  * Handle case where chunk offset exactly matches FSC entry offset
  */
 void SkySyncCWorker::handle_exact_offset_match(char *map, uint64_t offset, uint64_t chunk_length,
-                                             file_fsc *fsc, uint64_t fsc_index,
-                                             uint32_t &cached_crc32, struct one_cdc &cdc) {
+                                              file_fsc *fsc, uint64_t fsc_index,
+                                              uint32_t &cached_crc32, struct one_cdc &cdc, uint64_t file_size) {
     if (DefaultWindowSize == chunk_length) {
         // Direct match - use pre-computed hash
         cdc.weak_hash = fsc->fsc_array[fsc_index].weak_hash;
     } else if (DefaultWindowSize > chunk_length) {
         // FSC window is larger than chunk - remove trailing bytes
         uint64_t gap = DefaultWindowSize - chunk_length;
+        uint64_t read_end = offset + chunk_length + gap;
+        
+        // BOUNDS CHECK: Ensure we don't read beyond file size
+        if (read_end > file_size) {
+            // fprintf(stderr, "BOUNDS VIOLATION in handle_exact_offset_match (line 167):\n");
+            // fprintf(stderr, "  offset=%lu, chunk_length=%lu, gap=%lu, read_end=%lu, file_size=%lu\n",
+            //         offset, chunk_length, gap, read_end, file_size);
+            cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
+            return;
+        }
+        
         cached_crc32 = crc32_isal(map + offset + chunk_length, gap, 0);
         cdc.weak_hash = crc32_remove0(fsc->fsc_array[fsc_index].weak_hash ^ cached_crc32, gap);
     } else {
         // Chunk is larger than FSC window - combine with additional bytes
         uint64_t gap = chunk_length - DefaultWindowSize;
+        uint64_t read_end = offset + DefaultWindowSize + gap;
+        
+        // BOUNDS CHECK: Ensure we don't read beyond file size
+        if (read_end > file_size) {
+            // fprintf(stderr, "BOUNDS VIOLATION in handle_exact_offset_match (line 172):\n");
+            // fprintf(stderr, "  offset=%lu, chunk_length=%lu, gap=%lu, read_end=%lu, file_size=%lu\n",
+            //         offset, chunk_length, gap, read_end, file_size);
+            cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
+            return;
+        }
+        
         cached_crc32 = crc32_isal(map + offset + DefaultWindowSize, gap, 0);
         cdc.weak_hash = crc32_comb(fsc->fsc_array[fsc_index].weak_hash, cached_crc32, gap);
     }
@@ -178,9 +200,9 @@ void SkySyncCWorker::handle_exact_offset_match(char *map, uint64_t offset, uint6
  * Handle case where chunk offset is in first half of FSC window
  */
 void SkySyncCWorker::handle_first_half_window(char *map, uint64_t offset, uint64_t chunk_length,
-                                            file_fsc *fsc, uint64_t fsc_index,
-                                            uint64_t mid_window_size, uint32_t &cached_crc32,
-                                            struct one_cdc &cdc) {
+                                             file_fsc *fsc, uint64_t fsc_index,
+                                             uint64_t mid_window_size, uint32_t &cached_crc32,
+                                             struct one_cdc &cdc, uint64_t file_size) {
     const uint64_t fsc_offset = fsc->fsc_array[fsc_index].offset;
     uint64_t gap = offset - fsc_offset;
     uint32_t tmp_crc32 = crc32_add0(cached_crc32, DefaultWindowSize - gap);
@@ -190,13 +212,29 @@ void SkySyncCWorker::handle_first_half_window(char *map, uint64_t offset, uint64
         cached_crc32 = tmp_crc32;
     } else if ((fsc_offset + DefaultWindowSize) > (offset + chunk_length)) {
         gap = fsc_offset + DefaultWindowSize - (offset + chunk_length);
+        
+        // BOUNDS CHECK: Ensure we don't read beyond file size
+        uint64_t read_end = offset + chunk_length + gap;
+        if (read_end > file_size) {
+            // Log the bounds violation for diagnosis
+            // fprintf(stderr, "BOUNDS VIOLATION DETECTED at line 193:\n");
+            // fprintf(stderr, "  offset=%lu, chunk_length=%lu, gap=%lu\n", offset, chunk_length, gap);
+            // fprintf(stderr, "  fsc_offset=%lu, DefaultWindowSize=%lu\n", fsc_offset, DefaultWindowSize);
+            // fprintf(stderr, "  read_end=%lu, file_size=%lu\n", read_end, file_size);
+            // fprintf(stderr, "  Attempting to read %lu bytes beyond file end\n", read_end - file_size);
+            
+            // Safe fallback: calculate CRC directly for the chunk
+            cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
+            return;
+        }
+        
         cached_crc32 = crc32_isal(map + offset + chunk_length, gap, 0);
         cdc.weak_hash = (cdc.weak_hash ^ cached_crc32);
         cdc.weak_hash = crc32_remove0(cdc.weak_hash, gap);
     } else {
         if (fsc_index + 1 < fsc->chunk_num) {
             calculate_weak_hash_for_extended_chunk(map, offset, chunk_length, fsc, fsc_index,
-                                                   mid_window_size, cached_crc32, cdc);
+                                                   mid_window_size, cached_crc32, cdc, file_size);
         } else {
             cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
         }
@@ -209,7 +247,7 @@ void SkySyncCWorker::handle_first_half_window(char *map, uint64_t offset, uint64
 void SkySyncCWorker::handle_second_half_window(char *map, uint64_t offset, uint64_t chunk_length,
                                              file_fsc *fsc, uint64_t fsc_index,
                                              uint64_t mid_window_size, uint32_t &cached_crc32,
-                                             struct one_cdc &cdc) {
+                                             struct one_cdc &cdc, uint64_t file_size) {
     if (fsc_index + 1 >= fsc->chunk_num) {
         cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
         return;
@@ -220,23 +258,44 @@ void SkySyncCWorker::handle_second_half_window(char *map, uint64_t offset, uint6
 
     calculate_weak_hash_for_second_half(map, offset, chunk_length, fsc, fsc_index,
                                         mid_window_size, cached_crc32, cdc,
-                                        next_fsc_offset, chunk_end);
+                                        next_fsc_offset, chunk_end, file_size);
 }
 
 void SkySyncCWorker::calculate_weak_hash_for_extended_chunk(char *map, uint64_t offset, uint64_t chunk_length,
                                                            file_fsc *fsc, uint64_t fsc_index,
                                                            uint64_t mid_window_size, uint32_t &cached_crc32,
-                                                           struct one_cdc &cdc) {
+                                                           struct one_cdc &cdc, uint64_t file_size) {
     const uint64_t chunk_end = offset + chunk_length;
     const uint64_t next_fsc_offset = fsc->fsc_array[fsc_index + 1].offset;
     uint64_t gap = chunk_end - next_fsc_offset;
 
     if (chunk_end < next_fsc_offset + mid_window_size) {
+        // BOUNDS CHECK: Ensure we don't read beyond file size
+        uint64_t read_end = next_fsc_offset + gap;
+        if (read_end > file_size) {
+            // fprintf(stderr, "BOUNDS VIOLATION in calculate_weak_hash_for_extended_chunk (line 273):\n");
+            // fprintf(stderr, "  next_fsc_offset=%lu, gap=%lu, read_end=%lu, file_size=%lu\n",
+            //         next_fsc_offset, gap, read_end, file_size);
+            cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
+            return;
+        }
+        
         cached_crc32 = crc32_isal(map + next_fsc_offset, gap, 0);
         cdc.weak_hash = crc32_comb(cdc.weak_hash, cached_crc32, gap);
     } else {
         cdc.weak_hash = crc32_comb(cdc.weak_hash, fsc->fsc_array[fsc_index + 1].weak_hash, DefaultWindowSize);
         gap = next_fsc_offset + DefaultWindowSize - chunk_end;
+        
+        // BOUNDS CHECK: Ensure we don't read beyond file size
+        uint64_t read_end = chunk_end + gap;
+        if (read_end > file_size) {
+            // fprintf(stderr, "BOUNDS VIOLATION in calculate_weak_hash_for_extended_chunk (line 278):\n");
+            // fprintf(stderr, "  chunk_end=%lu, gap=%lu, read_end=%lu, file_size=%lu\n",
+            //         chunk_end, gap, read_end, file_size);
+            cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
+            return;
+        }
+        
         cached_crc32 = crc32_isal(map + chunk_end, gap, 0);
         cdc.weak_hash = (cdc.weak_hash ^ cached_crc32);
         cdc.weak_hash = crc32_remove0(cdc.weak_hash, gap);
@@ -247,16 +306,38 @@ void SkySyncCWorker::calculate_weak_hash_for_second_half(char *map, uint64_t off
                                                         file_fsc *fsc, uint64_t fsc_index,
                                                         uint64_t mid_window_size, uint32_t &cached_crc32,
                                                         struct one_cdc &cdc, uint64_t next_fsc_offset,
-                                                        uint64_t chunk_end) {
+                                                        uint64_t chunk_end, uint64_t file_size) {
     uint32_t tmp_crc32 = cached_crc32;
     uint64_t gap;
 
     if (chunk_end < (next_fsc_offset + mid_window_size)) {
         gap = chunk_end - next_fsc_offset;
+        
+        // BOUNDS CHECK: Ensure we don't read beyond file size
+        uint64_t read_end = next_fsc_offset + gap;
+        if (read_end > file_size) {
+            // fprintf(stderr, "BOUNDS VIOLATION in calculate_weak_hash_for_second_half (line 294):\n");
+            // fprintf(stderr, "  next_fsc_offset=%lu, gap=%lu, read_end=%lu, file_size=%lu\n",
+            //         next_fsc_offset, gap, read_end, file_size);
+            cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
+            return;
+        }
+        
         cached_crc32 = crc32_isal(map + next_fsc_offset, gap, 0);
         cdc.weak_hash = crc32_comb(tmp_crc32, cached_crc32, gap);
     } else if (chunk_end < (next_fsc_offset + DefaultWindowSize)) {
         gap = next_fsc_offset + DefaultWindowSize - chunk_end;
+        
+        // BOUNDS CHECK: Ensure we don't read beyond file size
+        uint64_t read_end = chunk_end + gap;
+        if (read_end > file_size) {
+            // fprintf(stderr, "BOUNDS VIOLATION in calculate_weak_hash_for_second_half (line 298):\n");
+            // fprintf(stderr, "  chunk_end=%lu, gap=%lu, read_end=%lu, file_size=%lu\n",
+            //         chunk_end, gap, read_end, file_size);
+            cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
+            return;
+        }
+        
         cached_crc32 = crc32_isal(map + chunk_end, gap, 0);
         cdc.weak_hash = crc32_comb(tmp_crc32, fsc->fsc_array[fsc_index + 1].weak_hash, DefaultWindowSize);
         cdc.weak_hash = (cdc.weak_hash ^ cached_crc32);
@@ -267,6 +348,17 @@ void SkySyncCWorker::calculate_weak_hash_for_second_half(char *map, uint64_t off
         if (fsc_index + 2 < fsc->chunk_num) {
             cdc.weak_hash = crc32_comb(tmp_crc32, fsc->fsc_array[fsc_index + 1].weak_hash, DefaultWindowSize);
             gap = chunk_end - fsc->fsc_array[fsc_index + 2].offset;
+            
+            // BOUNDS CHECK: Ensure we don't read beyond file size
+            uint64_t read_end = fsc->fsc_array[fsc_index + 2].offset + gap;
+            if (read_end > file_size) {
+                // fprintf(stderr, "BOUNDS VIOLATION in calculate_weak_hash_for_second_half (line 308):\n");
+                // fprintf(stderr, "  fsc_offset=%lu, gap=%lu, read_end=%lu, file_size=%lu\n",
+                //         fsc->fsc_array[fsc_index + 2].offset, gap, read_end, file_size);
+                cdc.weak_hash = crc32_isal(map + offset, chunk_length, 0);
+                return;
+            }
+            
             cached_crc32 = crc32_isal(map + fsc->fsc_array[fsc_index + 2].offset, gap, 0);
             cdc.weak_hash = crc32_comb(cdc.weak_hash, cached_crc32, gap);
         } else {
